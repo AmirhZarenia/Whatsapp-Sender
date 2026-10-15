@@ -1,0 +1,5 @@
+node_modules
+whatsapp_session
+uploads/campaign-images/*
+!uploads/campaign-images/.gitkeep
+
