@@ -1530,9 +1530,18 @@ function getNextAllowedSendTime(
         return null;
     }
 
-    return state.active
-        ? now
-        : state.nextStart;
+    // اگر هنوز داخل بازه فعلی هستیم اما تایمر بعدی از انتهای بازه عبور می‌کند،
+    // شروع بازه مجاز بعدی را پیدا کن؛ برگرداندن `now` باعث اجرای فوری و حلقه ارسال می‌شود.
+    if (state.active) {
+        return getNextScheduleStart(
+            campaign.schedule,
+            campaign.startDate,
+            campaign.endDate,
+            state.windowEnd
+        );
+    }
+
+    return state.nextStart;
 }
 
 
@@ -4359,6 +4368,9 @@ app.get(
 // موتور پردازش کمپین‌ها
 // ==========================================
 
+// حاشیه امن پیش از پایان بازه؛ تایمر آخر کمی قبل از انتهای بازه اجرا می‌شود.
+const CAMPAIGN_END_BUFFER_MS = 60 * 1000;
+
 export const runCampaignWorker = (
     campaignId
 ) => {
@@ -5263,17 +5275,13 @@ export const runCampaignWorker = (
 
                     await campaign.save();
 
-                    console.log(
-                        '⏱️ تلاش بعدی به دلیل ناموفق بودن ارسال، ۱۵ ثانیه دیگر انجام می‌شود.'
-                    );
-
+                    // فاصله تلاش مجدد پس از ارسال ناموفق طبق رفتار قبلی حفظ می‌شود: ۱۵ ثانیه.
                     await scheduleNextRun(
                         15000,
                         {
                             persist: true
                         }
                     );
-
                     return;
 
                 }
@@ -5369,19 +5377,30 @@ export const runCampaignWorker = (
 
                         : 0;
 
-                if (
-                    !latestScheduleState.active ||
-                    randomDelayMs >=
-                    remainingWindowMs
-                ) {
-
+                if (!latestScheduleState.active) {
                     await scheduleAtNextAllowedWindow(
                         latestCampaign,
-                        'تاخیر بعدی از انتهای بازه عبور می‌کند'
+                        'خارج از بازه مجاز ارسال'
                     );
-
                     return;
+                }
 
+                if (randomDelayMs >= remainingWindowMs) {
+                    const finalAttemptDelayMs =
+                        remainingWindowMs - CAMPAIGN_END_BUFFER_MS;
+
+                    if (finalAttemptDelayMs > 0) {
+                        console.log(
+                            `⏳ فاصله تصادفی از انتهای کمپین عبور می‌کند؛ تایمر به ${Math.ceil(finalAttemptDelayMs / 60000)} دقیقه و ${Math.floor((finalAttemptDelayMs % 60000) / 1000)} ثانیه مانده به پایان بازه تنظیم شد.`
+                        );
+                        await scheduleNextRun(finalAttemptDelayMs, { persist: true });
+                    } else {
+                        await scheduleAtNextAllowedWindow(
+                            latestCampaign,
+                            'زمان کافی برای ارسال امن در بازه فعلی باقی نمانده است'
+                        );
+                    }
+                    return;
                 }
 
                 await scheduleNextRun(
